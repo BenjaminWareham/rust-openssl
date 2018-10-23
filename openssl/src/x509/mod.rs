@@ -463,6 +463,19 @@ impl X509Ref {
         }
     }
 
+    /// Returns this certificate's issuer name.
+    ///
+    /// This corresponds to [`X509_get_issuer_name`].
+    ///
+    /// [`X509_get_issuer_name`]: https://www.openssl.org/docs/man1.1.0/crypto/X509_get_subject_name.html
+    pub fn issuer_name(&self) -> &X509NameRef {
+        unsafe {
+            let name = ffi::X509_get_issuer_name(self.as_ptr());
+            assert!(!name.is_null());
+            X509NameRef::from_ptr(name)
+        }
+    }
+
     /// Returns this certificate's SAN entries, if they exist.
     pub fn subject_alt_names(&self) -> Option<Stack<GeneralName>> {
         unsafe {
