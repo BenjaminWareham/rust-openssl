@@ -19,6 +19,7 @@ use bio::MemBioSlice;
 use bn::{BigNum, MSB_MAYBE_ZERO};
 use conf::ConfRef;
 use error::ErrorStack;
+use ex_data::Index;
 use hash::MessageDigest;
 use nid::{self, Nid};
 use pkey::{PKey, PKeyRef};
@@ -64,6 +65,26 @@ foreign_type! {
     pub struct X509StoreContextRef;
 }
 
+impl X509StoreContext {
+    /// Returns the index which can be used to obtain a reference to the `Ssl` associated with a
+    /// context.
+    pub fn ssl_idx() -> Result<Index<X509StoreContext, SslRef>, ErrorStack> {
+        unsafe { cvt_n(ffi::SSL_get_ex_data_X509_STORE_CTX_idx()).map(|idx| Index::from_raw(idx)) }
+    }
+
+    /// Creates a new `X509StoreContext` instance.
+    ///
+    /// This corresponds to [`X509_STORE_CTX_new`].
+    ///
+    /// [`X509_STORE_CTX_new`]: https://www.openssl.org/docs/man1.1.0/crypto/X509_STORE_CTX_new.html
+    pub fn new() -> Result<X509StoreContext, ErrorStack> {
+        unsafe {
+            ffi::init();
+            cvt_p(ffi::X509_STORE_CTX_new()).map(|p| X509StoreContext(p))
+        }
+    }
+}
+
 impl X509StoreContextRef {
     pub fn error(&self) -> Option<X509VerifyError> {
         unsafe { X509VerifyError::from_raw(ffi::X509_STORE_CTX_get_error(self.as_ptr()) as c_long) }
@@ -78,6 +99,68 @@ impl X509StoreContextRef {
                 Some(X509Ref::from_ptr(ptr))
             }
         }
+    }
+    
+        /// Initializes this context with the given certificate, certificates chain and certificate
+    /// store. After initializing the context, the `with_context` closure is called with the prepared
+    /// context. As long as the closure is running, the context stays initialized and can be used
+    /// to e.g. verify a certificate. The context will be cleaned up, after the closure finished.
+    ///
+    /// * `trust` - The certificate store with the trusted certificates.
+    /// * `cert` - The certificate that should be verified.
+    /// * `cert_chain` - The certificates chain.
+    /// * `with_context` - The closure that is called with the initialized context.
+    ///
+    /// This corresponds to [`X509_STORE_CTX_init`] before calling `with_context` and to
+    /// [`X509_STORE_CTX_cleanup`] after calling `with_context`.
+    ///
+    /// [`X509_STORE_CTX_init`]:  https://www.openssl.org/docs/man1.0.2/crypto/X509_STORE_CTX_init.html
+    /// [`X509_STORE_CTX_cleanup`]:  https://www.openssl.org/docs/man1.0.2/crypto/X509_STORE_CTX_cleanup.html
+    pub fn init<F, T>(
+        &mut self,
+        trust: &store::X509StoreRef,
+        cert: &X509Ref,
+        cert_chain: &StackRef<X509>,
+        with_context: F,
+    ) -> Result<T, ErrorStack>
+    where
+        F: FnOnce(&mut X509StoreContextRef) -> Result<T, ErrorStack>,
+    {
+        struct Cleanup<'a>(&'a mut X509StoreContextRef);
+
+        impl<'a> Drop for Cleanup<'a> {
+            fn drop(&mut self) {
+                unsafe {
+                    ffi::X509_STORE_CTX_cleanup(self.0.as_ptr());
+                }
+            }
+        }
+
+        unsafe {
+            cvt(ffi::X509_STORE_CTX_init(
+                self.as_ptr(),
+                trust.as_ptr(),
+                cert.as_ptr(),
+                cert_chain.as_ptr(),
+            ))?;
+
+            let cleanup = Cleanup(self);
+            with_context(cleanup.0)
+        }
+    }
+
+    /// Verifies the stored certificate.
+    ///
+    /// Returns `true` if verification succeeds. The `error` method will return the specific
+    /// validation error if the certificate was not valid.
+    ///
+    /// This will only work inside of a call to `init`.
+    ///
+    /// This corresponds to [`X509_verify_cert`].
+    ///
+    /// [`X509_verify_cert`]:  https://www.openssl.org/docs/man1.0.2/crypto/X509_verify_cert.html
+    pub fn verify_cert(&mut self) -> Result<bool, ErrorStack> {
+        unsafe { cvt_n(ffi::X509_verify_cert(self.as_ptr())).map(|n| n != 0) }
     }
 
     pub fn error_depth(&self) -> u32 {
